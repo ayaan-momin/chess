@@ -14,7 +14,8 @@ timer                   =  pygame.time.Clock()
 FPS                     =  30
 
 tile_size               =  50
-board                   =  [[(x, y) for y in range(8)] for x in range(8)]
+# Using numpy array for board - much faster lookups!
+board                   =  np.zeros((8, 8), dtype=object)  # Will store piece names or None
 pieces                  =  {'K':'♚', 'Q':'♛', 'R':'♜', 'B':'♝', 'N':'♞', 'P':'♟'}
 
 # Initial positions
@@ -35,13 +36,25 @@ game_state              =  "playing"  # "playing", "checkmate", "stalemate"
 pgn_moves               =  []
 move_number             =  1
 
+def update_board_array():
+
+    board.fill(None)
+    
+    for name, pos in white_position.items():
+        x, y = pos
+        board[x, y] = ('w', name)
+    
+    for name, pos in black_position.items():
+        x, y = pos
+        board[x, y] = ('b', name)
+
 def play_move_sound():
     try:
         sample_rate     = 22050
         duration        = 0.15
         t               = np.linspace(0, duration, int(sample_rate * duration))
-        frequency       = 120  # Deep bass note
-        decay           = np.exp(-t * 15)  # Quick fade
+        frequency       = 120
+        decay           = np.exp(-t * 15) 
         wave            = np.sin(2 * np.pi * frequency * t) * decay * 0.3
         wave           += np.sin(2 * np.pi * frequency * 2 * t) * decay * 0.1
         wave           += np.sin(2 * np.pi * frequency * 3 * t) * decay * 0.05
@@ -86,6 +99,7 @@ def reset_game():
     game_state        = "playing"
     pgn_moves         = []
     move_number       = 1
+    update_board_array()  # Initialize board array
     print("\n=== GAME RESET ===")
     print("PGN: [New Game]")
 
@@ -163,15 +177,16 @@ def draw_valid_moves():
         screen.blit(star_text, star_rect)
 
 def get_piece_at_position(x, y):
-    for name, pos in white_position.items():
-        if pos == (x, y):
-            return name, 'white'
-    for name, pos in black_position.items():
-        if pos == (x, y):
-            return name, 'black'
+    if 0 <= x < 8 and 0 <= y < 8:
+        piece_data = board[x, y]
+        if piece_data is not None:
+            color_char, piece_name = piece_data
+            color = 'white' if color_char == 'w' else 'black'
+            return piece_name, color
     return None, None
 
 def is_in_check(king_color):
+    # Find king position using numpy
     king_pos = None
     if king_color == 'white':
         for name, pos in white_position.items():
@@ -198,114 +213,117 @@ def is_in_check(king_color):
     return False
 
 def get_valid_moves_raw(piece_name, piece_color, piece_pos):
-    """Get valid moves without considering check (for internal calculations)"""
     moves = []
     piece_type = piece_name[0]
     x, y = piece_pos
     
     if piece_type == 'P': 
         if piece_color == 'white':
-            if y > 0 and get_piece_at_position(x, y-1)[0] is None:
+            if y > 0 and board[x, y-1] is None:
                 moves.append((x, y-1))
-                if y == 6 and get_piece_at_position(x, y-2)[0] is None:
+                if y == 6 and board[x, y-2] is None:
                     moves.append((x, y-2))
-            if x > 0 and y > 0:
-                target_piece, target_color = get_piece_at_position(x-1, y-1)
-                if target_piece and target_color == 'black':
-                    moves.append((x-1, y-1))
-            if x < 7 and y > 0:
-                target_piece, target_color = get_piece_at_position(x+1, y-1)
-                if target_piece and target_color == 'black':
-                    moves.append((x+1, y-1))
+            for dx in [-1, 1]:
+                if 0 <= x+dx < 8 and y > 0:
+                    piece_data = board[x+dx, y-1]
+                    if piece_data is not None and piece_data[0] == 'b':
+                        moves.append((x+dx, y-1))
         else: 
-            if y < 7 and get_piece_at_position(x, y+1)[0] is None:
+            if y < 7 and board[x, y+1] is None:
                 moves.append((x, y+1))
-                if y == 1 and get_piece_at_position(x, y+2)[0] is None:
+                if y == 1 and board[x, y+2] is None:
                     moves.append((x, y+2))
-            if x > 0 and y < 7:
-                target_piece, target_color = get_piece_at_position(x-1, y+1)
-                if target_piece and target_color == 'white':
-                    moves.append((x-1, y+1))
-            if x < 7 and y < 7:
-                target_piece, target_color = get_piece_at_position(x+1, y+1)
-                if target_piece and target_color == 'white':
-                    moves.append((x+1, y+1))
+            # Diagonal captures
+            for dx in [-1, 1]:
+                if 0 <= x+dx < 8 and y < 7:
+                    piece_data = board[x+dx, y+1]
+                    if piece_data is not None and piece_data[0] == 'w':
+                        moves.append((x+dx, y+1))
     
     elif piece_type == 'R':
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        directions = np.array([(0, 1), (0, -1), (1, 0), (-1, 0)])
         for dx, dy in directions:
             for i in range(1, 8):
                 new_x, new_y = x + dx*i, y + dy*i
                 if 0 <= new_x < 8 and 0 <= new_y < 8:
-                    target_piece, target_color = get_piece_at_position(new_x, new_y)
-                    if target_piece is None:
+                    piece_data = board[new_x, new_y]
+                    if piece_data is None:
                         moves.append((new_x, new_y))
-                    elif target_color != piece_color:
-                        moves.append((new_x, new_y))
-                        break
                     else:
+                        target_color = 'white' if piece_data[0] == 'w' else 'black'
+                        if target_color != piece_color:
+                            moves.append((new_x, new_y))
                         break
                 else:
                     break
     
     elif piece_type == 'B': 
-        directions = [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+        directions = np.array([(1, 1), (1, -1), (-1, 1), (-1, -1)])
         for dx, dy in directions:
             for i in range(1, 8):
                 new_x, new_y = x + dx*i, y + dy*i
                 if 0 <= new_x < 8 and 0 <= new_y < 8:
-                    target_piece, target_color = get_piece_at_position(new_x, new_y)
-                    if target_piece is None:
+                    piece_data = board[new_x, new_y]
+                    if piece_data is None:
                         moves.append((new_x, new_y))
-                    elif target_color != piece_color:
-                        moves.append((new_x, new_y))
-                        break
                     else:
+                        target_color = 'white' if piece_data[0] == 'w' else 'black'
+                        if target_color != piece_color:
+                            moves.append((new_x, new_y))
                         break
                 else:
                     break
     
     elif piece_type == 'N': 
-        knight_moves = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+        knight_moves = np.array([(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)])
         for dx, dy in knight_moves:
             new_x, new_y = x + dx, y + dy
             if 0 <= new_x < 8 and 0 <= new_y < 8:
-                target_piece, target_color = get_piece_at_position(new_x, new_y)
-                if target_piece is None or target_color != piece_color:
+                piece_data = board[new_x, new_y]
+                if piece_data is None:
                     moves.append((new_x, new_y))
+                else:
+                    target_color = 'white' if piece_data[0] == 'w' else 'black'
+                    if target_color != piece_color:
+                        moves.append((new_x, new_y))
     
     elif piece_type == 'Q': 
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        directions = np.array([(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)])
         for dx, dy in directions:
             for i in range(1, 8):
                 new_x, new_y = x + dx*i, y + dy*i
                 if 0 <= new_x < 8 and 0 <= new_y < 8:
-                    target_piece, target_color = get_piece_at_position(new_x, new_y)
-                    if target_piece is None:
+                    piece_data = board[new_x, new_y]
+                    if piece_data is None:
                         moves.append((new_x, new_y))
-                    elif target_color != piece_color:
-                        moves.append((new_x, new_y))
-                        break
                     else:
+                        target_color = 'white' if piece_data[0] == 'w' else 'black'
+                        if target_color != piece_color:
+                            moves.append((new_x, new_y))
                         break
                 else:
                     break
     
     elif piece_type == 'K': 
-        king_moves = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+        king_moves = np.array([(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)])
         for dx, dy in king_moves:
             new_x, new_y = x + dx, y + dy
             if 0 <= new_x < 8 and 0 <= new_y < 8:
-                target_piece, target_color = get_piece_at_position(new_x, new_y)
-                if target_piece is None or target_color != piece_color:
+                piece_data = board[new_x, new_y]
+                if piece_data is None:
                     moves.append((new_x, new_y))
+                else:
+                    target_color = 'white' if piece_data[0] == 'w' else 'black'
+                    if target_color != piece_color:
+                        moves.append((new_x, new_y))
     
     return moves
 
 def would_be_in_check_after_move(piece_name, piece_color, to_pos):
-
+    # Store original state
     original_white = white_position.copy()
     original_black = black_position.copy()
+    original_board = board.copy()
     
     captured_piece_name = None
     if piece_color == 'white':
@@ -320,14 +338,15 @@ def would_be_in_check_after_move(piece_name, piece_color, to_pos):
             if pos == to_pos:
                 del white_position[name]
                 break
-    
 
+    update_board_array()
     in_check = is_in_check(piece_color)
     
     white_position.clear()
     white_position.update(original_white)
     black_position.clear()
     black_position.update(original_black)
+    board[:] = original_board
     
     return in_check
 
@@ -401,7 +420,6 @@ def create_pgn_move(piece_name, from_pos, to_pos, is_capture, is_check, is_check
     return move
 
 def update_pgn(piece_name, from_pos, to_pos, is_capture):
-
     global pgn_moves, move_number
     
     opponent_color = 'black' if turn_step in [0, 1] else 'white'
@@ -492,18 +510,19 @@ def handle_click(pos):
     elif turn_step == 1: 
         if (x, y) in valid_moves:
             from_pos = white_position[selected_piece]
-            target_piece, target_color = get_piece_at_position(x, y)
-            is_capture = target_piece is not None
+            piece_data = board[x, y]
+            is_capture = piece_data is not None
             
-            if is_capture and target_color == 'black':
+            if is_capture and piece_data[0] == 'b':
                 captured_piece = (x, y)
                 capture_timer = 30
-                del black_position[target_piece]
+                del black_position[piece_data[1]]
                 play_capture_sound()
             else:
                 play_move_sound()
             
             white_position[selected_piece] = (x, y)
+            update_board_array()  # Update numpy array after move
             update_pgn(selected_piece, from_pos, (x, y), is_capture)
             
             valid_moves = []
@@ -531,18 +550,19 @@ def handle_click(pos):
     elif turn_step == 3:
         if (x, y) in valid_moves:
             from_pos = black_position[selected_piece]
-            target_piece, target_color = get_piece_at_position(x, y)
-            is_capture = target_piece is not None
+            piece_data = board[x, y]
+            is_capture = piece_data is not None
             
-            if is_capture and target_color == 'white':
+            if is_capture and piece_data[0] == 'w':
                 captured_piece = (x, y)
                 capture_timer = 30
-                del white_position[target_piece]
+                del white_position[piece_data[1]]
                 play_capture_sound()
             else:
                 play_move_sound()
             
             black_position[selected_piece] = (x, y)
+            update_board_array()  # Update numpy array after move
             update_pgn(selected_piece, from_pos, (x, y), is_capture)
             
             valid_moves = []
@@ -558,6 +578,8 @@ def handle_click(pos):
             valid_moves = []
             selected_piece = None
             turn_step = 2
+
+update_board_array()
 
 print("=== CHESS GAME STARTED ===")
 print("Controls:")
@@ -582,7 +604,7 @@ while run:
         if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
             run = False
         elif event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_r:  # Press R to restart
+            if event.key == pygame.K_r:
                 reset_game()
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:  # Left click
